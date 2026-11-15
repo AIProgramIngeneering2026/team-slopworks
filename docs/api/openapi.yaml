@@ -221,7 +221,7 @@ paths:
         '400':
           $ref: '#/components/responses/BadRequest'
         '404':
-          description: UUID корректен, но задание не найдено; code = job_not_found.
+          description: UUID корректен, но задание не найдено; code = job_not_found, errors = {}.
           content:
             application/problem+json:
               schema:
@@ -233,8 +233,7 @@ paths:
                 detail: Задание с указанным id не найдено.
                 instance: /jobs/8c7d8397-47fa-4f09-9c86-32b46f9d8072
                 code: job_not_found
-                errors:
-                  id: [Задание не найдено.]
+                errors: {}
         '500':
           $ref: '#/components/responses/InternalError'
         '503':
@@ -270,15 +269,29 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/ProblemDetails'
-          example:
-            type: about:blank
-            title: Bad Request
-            status: 400
-            detail: Не удалось разобрать запрос.
-            instance: /jobs
-            code: invalid_request
-            errors:
-              parameters: [Ожидается корректный JSON-объект.]
+          examples:
+            invalidJson:
+              summary: POST /jobs - некорректный JSON в parameters
+              value:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: Не удалось разобрать параметры запроса.
+                instance: /jobs
+                code: invalid_request
+                errors:
+                  parameters: [Ожидается корректный JSON-объект.]
+            invalidJobId:
+              summary: GET /jobs/{id} - неверный формат UUID
+              value:
+                type: about:blank
+                title: Bad Request
+                status: 400
+                detail: Идентификатор задания должен быть корректным UUID.
+                instance: /jobs/not-a-uuid
+                code: invalid_request
+                errors:
+                  id: [Ожидается корректный UUID.]
     InternalError:
       description: Неожиданный сбой HTTP-операции; code = internal_error, без внутренних деталей.
       content:
