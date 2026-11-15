@@ -8,6 +8,8 @@ info:
     Состояния соответствуют docs/requirements.md: created → running → done | failed.
     Управление состоянием, отмена и перезапуск через API не предоставляются.
     Реализация HTTP и доменного ядра не входит в этот документ.
+    В первой версии нет аутентификации и владельца Job. Знание случайного UUID
+    задания даёт доступ к его состоянию и результату.
 
     Все HTTP-ошибки имеют формат ProblemDetails (RFC 9457), application/problem+json.
     code - стабильный машинный код, errors - ошибки полей; для общей ошибки errors = {}.
@@ -29,6 +31,11 @@ paths:
       operationId: createJob
       summary: Принять PDF на обработку
       description: |
+        Сначала проверяется размер всего тела multipart-запроса, включая служебные
+        части. Лимит настраивается, по умолчанию 20 МиБ (20971520 байт).
+        Превышение → 413 payload_too_large до сохранения файла и создания Job;
+        OCR не вызывается, ключ не резервируется. Ровно лимит допустим.
+
         До создания Job проверяются заголовок ключа, структура запроса, параметры
         и содержимое файла. При отказе Job не создаётся, OCR не вызывается,
         новый ключ не резервируется. Пустой файл - invalid_parameters (422).
@@ -68,6 +75,8 @@ paths:
           headers:
             Location:
               $ref: '#/components/headers/JobLocation'
+            Retry-After:
+              $ref: '#/components/headers/PollingInterval'
           content:
             application/json:
               schema:
@@ -104,6 +113,21 @@ paths:
                 code: idempotency_conflict
                 errors:
                   Idempotency-Key: [Для другого запроса используйте новый ключ.]
+        '413':
+          description: Тело запроса больше настроенного лимита; code = payload_too_large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: about:blank
+                title: Content Too Large
+                status: 413
+                detail: Превышен допустимый размер тела запроса.
+                instance: /jobs
+                code: payload_too_large
+                errors:
+                  file: [Допустимый размер тела запроса не больше 20 МиБ (20971520 байт).]
         '415':
           description: Тип тела запроса не multipart/form-data; code = unsupported_media_type.
           content:
@@ -175,6 +199,8 @@ paths:
         Тайм-аут OCR после двух попыток - HTTP 200, status = failed,
         error.code = ocr_timeout; это не HTTP-ошибка запроса состояния.
         При первом тайм-ауте выполняется один повтор, Job остаётся running.
+        Для created и running ответ содержит Retry-After с рекомендуемой паузой
+        до следующего опроса. Для done и failed этот заголовок отсутствует.
       parameters:
         - name: id
           in: path
@@ -185,6 +211,9 @@ paths:
       responses:
         '200':
           description: Текущее состояние Job, включая завершившееся ошибкой задание.
+          headers:
+            Retry-After:
+              $ref: '#/components/headers/PollingInterval'
           content:
             application/json:
               schema:
@@ -217,6 +246,30 @@ paths:
                       detail: OCR не ответил за две попытки.
                       instance: /jobs/8c7d8397-47fa-4f09-9c86-32b46f9d8072
                       code: ocr_timeout
+                      errors: {}
+                interrupted:
+                  value:
+                    id: 8c7d8397-47fa-4f09-9c86-32b46f9d8072
+                    status: failed
+                    error:
+                      type: about:blank
+                      title: Internal Server Error
+                      status: 500
+                      detail: Обработка прервана перезапуском приложения.
+                      instance: /jobs/8c7d8397-47fa-4f09-9c86-32b46f9d8072
+                      code: processing_interrupted
+                      errors: {}
+                unreadableDocument:
+                  value:
+                    id: 8c7d8397-47fa-4f09-9c86-32b46f9d8072
+                    status: failed
+                    error:
+                      type: about:blank
+                      title: Unprocessable Content
+                      status: 422
+                      detail: OCR не может прочитать повреждённый или зашифрованный PDF.
+                      instance: /jobs/8c7d8397-47fa-4f09-9c86-32b46f9d8072
+                      code: unreadable_document
                       errors: {}
         '400':
           $ref: '#/components/responses/BadRequest'
@@ -255,6 +308,16 @@ components:
         pattern: '^[!-~]{1,128}$'
       example: 365331b5-4243-4bee-9664-cb9fa9634425
   headers:
+    PollingInterval:
+      description: |
+        Рекомендуемая пауза до следующего GET /jobs/{id} в секундах, по умолчанию 2.
+        Присутствует в ответе 202 на POST и в ответе 200 на GET для created/running.
+        Не является ограничением частоты запросов или оценкой времени готовности.
+      schema:
+        type: integer
+        minimum: 1
+        default: 2
+        example: 2
     JobLocation:
       description: Путь для получения этого Job; присутствует в ответах 202 и 200 на POST.
       schema:
@@ -460,6 +523,7 @@ components:
             - invalid_parameters
             - unsupported_media_type
             - unsupported_file_format
+            - payload_too_large
             - idempotency_conflict
             - job_not_found
             - internal_error
@@ -467,6 +531,8 @@ components:
             - ocr_timeout
             - ocr_invalid_response
             - ocr_unavailable
+            - unreadable_document
+            - processing_interrupted
             - processing_failed
         errors:
           type: object
@@ -483,6 +549,9 @@ components:
         ocr_timeout (504) - два тайм-аута, после первого ровно один повтор;
         ocr_invalid_response (502) - некорректный ответ OCR;
         ocr_unavailable (503) - иной отказ OCR; processing_failed (500) - иной сбой конвейера.
+        unreadable_document (422) - OCR отклонил повреждённый или зашифрованный PDF;
+        processing_interrupted (500) - при запуске приложения обнаружен прерванный running.
+        В обоих случаях Job завершается без повторного запуска.
         Повтор предусмотрен только для тайм-аута. errors = {}, instance = /jobs/{id}.
         Внешний HTTP-ответ GET остаётся 200.
       allOf:
@@ -491,7 +560,7 @@ components:
           properties:
             code:
               type: string
-              enum: [ocr_timeout, ocr_invalid_response, ocr_unavailable, processing_failed]
+              enum: [ocr_timeout, ocr_invalid_response, ocr_unavailable, unreadable_document, processing_interrupted, processing_failed]
             status:
               type: integer
-              enum: [500, 502, 503, 504]
+              enum: [422, 500, 502, 503, 504]
