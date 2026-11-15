@@ -120,8 +120,7 @@ Dispatcher работает в `BackgroundService` одного экземпля
 ожидающие задания из БД и атомарно переводит выбранный Job из `created`
 в `running`. Очередь и восстановление описаны в [ADR-001][background-adr].
 Порядок сохранения PDF и записи Job, а также компенсация при сбое БД описаны
-в [ADR-002][storage-adr]. Оба ADR входят в
-[PR #21](https://github.com/AIProgramIngeneering2026/team-slopworks/pull/21).
+в [ADR-002][storage-adr].
 
 ## Состояния Job
 
@@ -193,5 +192,5 @@ HTTP-коды, поля запросов и тела ошибок определ
 Контракт ITool / ToolResult и ADR относятся к задаче
 [#14](https://github.com/AIProgramIngeneering2026/team-slopworks/issues/14).
 
-[background-adr]: https://github.com/AIProgramIngeneering2026/team-slopworks/blob/7bc20d6cb2dd09a749597c38a338fe7e19c1c112/docs/adr/001-background-job-processing.md
-[storage-adr]: https://github.com/AIProgramIngeneering2026/team-slopworks/blob/7bc20d6cb2dd09a749597c38a338fe7e19c1c112/docs/adr/002-data-and-file-storage.md
+[background-adr]: adr/0001-background-job-processing.md
+[storage-adr]: adr/0002-data-and-file-storage.md
