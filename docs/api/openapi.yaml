@@ -1,0 +1,484 @@
+openapi: 3.0.3
+info:
+  title: Конвейер обработки документов
+  version: 0.1.0
+  description: |
+    Контракт P2, issue #13. Job - задание на обработку одного PDF:
+    OCR, затем подсчёт слов и символов. Выполнение фоновое.
+    Состояния соответствуют docs/requirements.md: created → running → done | failed.
+    Управление состоянием, отмена и перезапуск через API не предоставляются.
+    Реализация HTTP и доменного ядра не входит в этот документ.
+
+    Все HTTP-ошибки имеют формат ProblemDetails (RFC 9457), application/problem+json.
+    code - стабильный машинный код, errors - ошибки полей; для общей ошибки errors = {}.
+    Ключи errors: file, parameters, parameters.language, Idempotency-Key, id или body.
+    status в ProblemDetails совпадает с HTTP-статусом ответа.
+    type = about:blank, title - стандартная английская фраза HTTP-статуса.
+    detail и сообщения errors предназначены человеку; клиент использует code.
+    Ошибка обработки уже принятого Job возвращается внутри Job при GET с HTTP 200.
+externalDocs:
+  description: Требования проекта
+  url: https://github.com/AIProgramIngeneering2026/team-slopworks/blob/main/docs/requirements.md
+tags:
+  - name: Jobs
+    description: Загрузка PDF и получение состояния обработки
+paths:
+  /jobs:
+    post:
+      tags: [Jobs]
+      operationId: createJob
+      summary: Принять PDF на обработку
+      description: |
+        До создания Job проверяются заголовок ключа, структура запроса, параметры
+        и содержимое файла. При отказе Job не создаётся, OCR не вызывается,
+        новый ключ не резервируется. Пустой файл - invalid_parameters (422).
+        Файл без сигнатуры %PDF- - unsupported_file_format (422), включая ZIP,
+        переименованный в PDF. Имя, расширение и Content-Type части file
+        не используются для определения фактического формата.
+
+        Idempotency-Key обязателен, регистрозависим и действует на весь сервис.
+        Ключ связывается с байтами файла и нормализованными параметрами атомарно
+        с созданием Job. Параметры сравниваются по значениям после подстановки
+        значений по умолчанию; порядок JSON-полей, multipart boundary, имя файла
+        и Content-Type части file не влияют на равенство запросов.
+        Отсутствие parameters, {} и {"language":"ru"} эквивалентны.
+
+        Новый ключ → 202, Job в created. Тот же ключ, те же байты и параметры
+        → 200 с тем же id и текущим состоянием, даже если Job уже завершён.
+        Тот же ключ с другим файлом или параметрами → 409 idempotency_conflict;
+        прежний Job не изменяется, новый не создаётся. При одновременных запросах
+        с одним ключом создаётся ровно один Job: победитель получает 202,
+        остальные - 200 при совпадении или 409 при различии содержимого.
+        Ключ и связь с Job сохраняются без автоматического истечения в первой версии.
+        Для намеренно новой обработки, в том числе после failed, нужен новый ключ.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CreateJobRequest'
+            encoding:
+              parameters:
+                contentType: application/json
+      responses:
+        '202':
+          description: Новое задание принято; тело содержит начальное состояние created.
+          headers:
+            Location:
+              $ref: '#/components/headers/JobLocation'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatedJob'
+              example:
+                id: 8c7d8397-47fa-4f09-9c86-32b46f9d8072
+                status: created
+        '200':
+          description: Повтор запроса; возвращается текущее представление прежнего Job.
+          headers:
+            Location:
+              $ref: '#/components/headers/JobLocation'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+              example:
+                id: 8c7d8397-47fa-4f09-9c86-32b46f9d8072
+                status: running
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: Ключ уже связан с другим файлом или параметрами; code = idempotency_conflict.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: about:blank
+                title: Conflict
+                status: 409
+                detail: Ключ уже использован с другим файлом или параметрами.
+                instance: /jobs
+                code: idempotency_conflict
+                errors:
+                  Idempotency-Key: [Для другого запроса используйте новый ключ.]
+        '415':
+          description: Тип тела запроса не multipart/form-data; code = unsupported_media_type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: about:blank
+                title: Unsupported Media Type
+                status: 415
+                detail: Ожидается multipart/form-data.
+                instance: /jobs
+                code: unsupported_media_type
+                errors:
+                  body: [Передайте файл и параметры как multipart/form-data.]
+        '422':
+          description: |
+            invalid_parameters - отсутствует/пустой file, неверные значения или
+            неизвестные поля параметров/тела, отсутствует или неверен Idempotency-Key.
+            unsupported_file_format - содержимое file не PDF.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              examples:
+                invalidLanguage:
+                  value:
+                    type: about:blank
+                    title: Unprocessable Content
+                    status: 422
+                    detail: Неверные параметры обработки.
+                    instance: /jobs
+                    code: invalid_parameters
+                    errors:
+                      parameters.language: [Допустимы ru и en.]
+                missingKey:
+                  value:
+                    type: about:blank
+                    title: Unprocessable Content
+                    status: 422
+                    detail: Не передан ключ идемпотентности.
+                    instance: /jobs
+                    code: invalid_parameters
+                    errors:
+                      Idempotency-Key: [Обязательный заголовок.]
+                disguisedZip:
+                  value:
+                    type: about:blank
+                    title: Unprocessable Content
+                    status: 422
+                    detail: Для обработки требуется PDF.
+                    instance: /jobs
+                    code: unsupported_file_format
+                    errors:
+                      file: [Содержимое файла не соответствует PDF.]
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /jobs/{id}:
+    get:
+      tags: [Jobs]
+      operationId: getJob
+      summary: Получить состояние, результат или причину отказа Job
+      description: |
+        Только чтение, без запуска или повторного выполнения обработки.
+        created и running не содержат result и error.
+        done содержит result (текст и статистику), failed содержит error без result.
+        Тайм-аут OCR после двух попыток - HTTP 200, status = failed,
+        error.code = ocr_timeout; это не HTTP-ошибка запроса состояния.
+        При первом тайм-ауте выполняется один повтор, Job остаётся running.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: UUID задания, полученный при POST /jobs.
+          schema:
+            $ref: '#/components/schemas/JobId'
+      responses:
+        '200':
+          description: Текущее состояние Job, включая завершившееся ошибкой задание.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+              examples:
+                created:
+                  value:
+                    id: 8c7d8397-47fa-4f09-9c86-32b46f9d8072
+                    status: created
+                running:
+                  value:
+                    id: 8c7d8397-47fa-4f09-9c86-32b46f9d8072
+                    status: running
+                done:
+                  value:
+                    id: 8c7d8397-47fa-4f09-9c86-32b46f9d8072
+                    status: done
+                    result:
+                      text: Привет мир
+                      wordCount: 2
+                      characterCount: 10
+                failed:
+                  value:
+                    id: 8c7d8397-47fa-4f09-9c86-32b46f9d8072
+                    status: failed
+                    error:
+                      type: about:blank
+                      title: Gateway Timeout
+                      status: 504
+                      detail: OCR не ответил за две попытки.
+                      instance: /jobs/8c7d8397-47fa-4f09-9c86-32b46f9d8072
+                      code: ocr_timeout
+                      errors: {}
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          description: UUID корректен, но задание не найдено; code = job_not_found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: about:blank
+                title: Not Found
+                status: 404
+                detail: Задание с указанным id не найдено.
+                instance: /jobs/8c7d8397-47fa-4f09-9c86-32b46f9d8072
+                code: job_not_found
+                errors:
+                  id: [Задание не найдено.]
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Непрозрачная строка из 1–128 печатных ASCII-символов без пробелов.
+        Один экземпляр заголовка. Рекомендуется новый UUID для каждой новой обработки.
+        Отсутствующий, пустой, повторённый или неверный заголовок → 422 invalid_parameters.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+        pattern: '^[!-~]{1,128}$'
+      example: 365331b5-4243-4bee-9664-cb9fa9634425
+  headers:
+    JobLocation:
+      description: Путь для получения этого Job; присутствует в ответах 202 и 200 на POST.
+      schema:
+        type: string
+        example: /jobs/8c7d8397-47fa-4f09-9c86-32b46f9d8072
+  responses:
+    BadRequest:
+      description: |
+        Неразбираемый multipart/JSON, повторённые части multipart или неверный UUID id.
+        code = invalid_request; errors указывает body, parameters или id соответственно.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: about:blank
+            title: Bad Request
+            status: 400
+            detail: Не удалось разобрать запрос.
+            instance: /jobs
+            code: invalid_request
+            errors:
+              parameters: [Ожидается корректный JSON-объект.]
+    InternalError:
+      description: Неожиданный сбой HTTP-операции; code = internal_error, без внутренних деталей.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: about:blank
+            title: Internal Server Error
+            status: 500
+            detail: Не удалось выполнить запрос.
+            instance: /jobs
+            code: internal_error
+            errors: {}
+    ServiceUnavailable:
+      description: |
+        Хранилище или приём заданий временно недоступны; code = service_unavailable.
+        После неопределённого исхода POST клиент повторяет исходный запрос с тем же ключом.
+        Недоступность фонового OCR отражается в Job, а не этим HTTP-ответом.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: about:blank
+            title: Service Unavailable
+            status: 503
+            detail: Сервис временно не может выполнить запрос.
+            instance: /jobs
+            code: service_unavailable
+            errors: {}
+  schemas:
+    CreateJobRequest:
+      type: object
+      additionalProperties: false
+      required: [file]
+      properties:
+        file:
+          type: string
+          format: binary
+          description: Один непустой PDF; формат проверяется по содержимому до создания Job.
+        parameters:
+          $ref: '#/components/schemas/ProcessingParameters'
+    ProcessingParameters:
+      type: object
+      additionalProperties: false
+      description: Параметры OCR; при отсутствии объекта используется language = ru.
+      properties:
+        language:
+          type: string
+          enum: [ru, en]
+          default: ru
+          description: Язык распознавания; null и неизвестные значения отклоняются с 422.
+    JobId:
+      type: string
+      format: uuid
+    Job:
+      description: Поля result и error появляются только в соответствующем конечном состоянии.
+      oneOf:
+        - $ref: '#/components/schemas/CreatedJob'
+        - $ref: '#/components/schemas/RunningJob'
+        - $ref: '#/components/schemas/DoneJob'
+        - $ref: '#/components/schemas/FailedJob'
+      discriminator:
+        propertyName: status
+        mapping:
+          created: '#/components/schemas/CreatedJob'
+          running: '#/components/schemas/RunningJob'
+          done: '#/components/schemas/DoneJob'
+          failed: '#/components/schemas/FailedJob'
+    CreatedJob:
+      type: object
+      additionalProperties: false
+      required: [id, status]
+      properties:
+        id:
+          $ref: '#/components/schemas/JobId'
+        status:
+          type: string
+          enum: [created]
+          description: Загружен - файл принят, Job зарегистрирован.
+    RunningJob:
+      type: object
+      additionalProperties: false
+      required: [id, status]
+      properties:
+        id:
+          $ref: '#/components/schemas/JobId'
+        status:
+          type: string
+          enum: [running]
+          description: В обработке - выполняются OCR и подсчёт статистики.
+    DoneJob:
+      type: object
+      additionalProperties: false
+      required: [id, status, result]
+      properties:
+        id:
+          $ref: '#/components/schemas/JobId'
+        status:
+          type: string
+          enum: [done]
+          description: Обработан - текст и статистика сохранены; конечное состояние.
+        result:
+          $ref: '#/components/schemas/ProcessingResult'
+    FailedJob:
+      type: object
+      additionalProperties: false
+      required: [id, status, error]
+      properties:
+        id:
+          $ref: '#/components/schemas/JobId'
+        status:
+          type: string
+          enum: [failed]
+          description: Отклонён - обработка завершилась ошибкой; конечное состояние.
+        error:
+          $ref: '#/components/schemas/JobFailure'
+    ProcessingResult:
+      type: object
+      additionalProperties: false
+      required: [text, wordCount, characterCount]
+      properties:
+        text:
+          type: string
+          description: Распознанный текст, включая пустой результат; оформление не гарантируется.
+        wordCount:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Число непустых последовательностей символов, разделённых Unicode-пробелами.
+        characterCount:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Число Unicode-кодовых точек в text, включая пробелы и переводы строк.
+    ProblemDetails:
+      type: object
+      description: |
+        ProblemDetails по https://www.rfc-editor.org/rfc/rfc9457.html
+        с обязательными расширениями code и errors. Для HTTP-ошибки status равен
+        HTTP-статусу; внутри JobFailure это сохранённая классификация сбоя обработки.
+      required: [type, title, status, detail, instance, code, errors]
+      properties:
+        type:
+          type: string
+          format: uri
+          enum: ['about:blank']
+        title:
+          type: string
+          minLength: 1
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+        detail:
+          type: string
+          minLength: 1
+        instance:
+          type: string
+          description: URI-reference запроса, а для ошибки обработки - /jobs/{id}.
+        code:
+          type: string
+          enum:
+            - invalid_request
+            - invalid_parameters
+            - unsupported_media_type
+            - unsupported_file_format
+            - idempotency_conflict
+            - job_not_found
+            - internal_error
+            - service_unavailable
+            - ocr_timeout
+            - ocr_invalid_response
+            - ocr_unavailable
+            - processing_failed
+        errors:
+          type: object
+          description: Поле → непустой список объяснений; {} для ошибок без конкретного поля.
+          additionalProperties:
+            type: array
+            minItems: 1
+            items:
+              type: string
+              minLength: 1
+    JobFailure:
+      description: |
+        Сохранённая ошибка обработки в том же формате ProblemDetails.
+        ocr_timeout (504) - два тайм-аута, после первого ровно один повтор;
+        ocr_invalid_response (502) - некорректный ответ OCR;
+        ocr_unavailable (503) - иной отказ OCR; processing_failed (500) - иной сбой конвейера.
+        Повтор предусмотрен только для тайм-аута. errors = {}, instance = /jobs/{id}.
+        Внешний HTTP-ответ GET остаётся 200.
+      allOf:
+        - $ref: '#/components/schemas/ProblemDetails'
+        - type: object
+          properties:
+            code:
+              type: string
+              enum: [ocr_timeout, ocr_invalid_response, ocr_unavailable, processing_failed]
+            status:
+              type: integer
+              enum: [500, 502, 503, 504]
