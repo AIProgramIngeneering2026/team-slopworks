@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/TeamSlopworks.Api/TeamSlopworks.Api.csproj" />
+    <Project Path="src/TeamSlopworks.Application/TeamSlopworks.Application.csproj" />
+    <Project Path="src/TeamSlopworks.Domain/TeamSlopworks.Domain.csproj" />
+    <Project Path="src/TeamSlopworks.Infrastructure/TeamSlopworks.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/TeamSlopworks.Application.Tests/TeamSlopworks.Application.Tests.csproj" />
+    <Project Path="tests/TeamSlopworks.Domain.Tests/TeamSlopworks.Domain.Tests.csproj" />
+  </Folder>
+</Solution>
