@@ -8,7 +8,7 @@ public enum JobStatus
     Failed
 }
 
-public sealed record JobResult(string Text, int WordCount, int CharacterCount);
+public sealed record JobResult(string Text, long WordCount, long CharacterCount);
 
 public sealed class Job
 {
@@ -39,8 +39,7 @@ public sealed class Job
         {
             if (_snapshot.Status != expected)
             {
-                throw new InvalidOperationException(
-                    $"Cannot transition job from {_snapshot.Status} to {next.Status}.");
+                throw new InvalidJobTransitionException(_snapshot.Status, next.Status);
             }
 
             _snapshot = next;

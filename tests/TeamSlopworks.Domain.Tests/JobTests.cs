@@ -23,7 +23,7 @@ public sealed class JobTests
         var job = new Job();
         job.Start();
 
-        Assert.Throws<InvalidOperationException>(job.Start);
+        Assert.Throws<InvalidJobTransitionException>(job.Start);
         AssertSnapshot(job, JobStatus.Running);
     }
 
@@ -34,7 +34,7 @@ public sealed class JobTests
         job.Start();
         job.Fail("ocr_failed");
 
-        Assert.Throws<InvalidOperationException>(() => job.Complete(Result));
+        Assert.Throws<InvalidJobTransitionException>(() => job.Complete(Result));
         AssertSnapshot(job, JobStatus.Failed, errorReason: "ocr_failed");
     }
 
@@ -43,7 +43,7 @@ public sealed class JobTests
     {
         var job = new Job();
 
-        Assert.Throws<InvalidOperationException>(() => job.Complete(Result));
+        Assert.Throws<InvalidJobTransitionException>(() => job.Complete(Result));
         AssertSnapshot(job, JobStatus.Created);
     }
 
@@ -54,8 +54,67 @@ public sealed class JobTests
         job.Start();
         job.Complete(Result);
 
-        Assert.Throws<InvalidOperationException>(job.Start);
+        Assert.Throws<InvalidJobTransitionException>(job.Start);
         AssertSnapshot(job, JobStatus.Done, Result);
+    }
+
+    [Theory]
+    [InlineData(JobStatus.Created)]
+    [InlineData(JobStatus.Done)]
+    [InlineData(JobStatus.Failed)]
+    public void CannotFailOutsideRunning(JobStatus status)
+    {
+        var job = new Job();
+        if (status != JobStatus.Created)
+            job.Start();
+        if (status == JobStatus.Done)
+            job.Complete(Result);
+        if (status == JobStatus.Failed)
+            job.Fail("ocr_failed");
+
+        var error = Assert.Throws<InvalidJobTransitionException>(() => job.Fail("other_error"));
+
+        Assert.Equal(status, error.CurrentStatus);
+        Assert.Equal(JobStatus.Failed, error.RequestedStatus);
+        AssertSnapshot(job, status, status == JobStatus.Done ? Result : null,
+            status == JobStatus.Failed ? "ocr_failed" : null);
+    }
+
+    [Fact]
+    public void CannotReplaceCompletedResult()
+    {
+        var job = new Job();
+        job.Start();
+        var original = new JobResult("text", 1, (long)int.MaxValue + 1);
+        job.Complete(original);
+
+        Assert.Throws<InvalidJobTransitionException>(() => job.Complete(Result));
+        AssertSnapshot(job, JobStatus.Done, original);
+    }
+
+    [Fact]
+    public async Task ConcurrentStartsAllowOnlyOneClaim()
+    {
+        var job = new Job();
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task<Exception?> ClaimAsync() => Task.Run<Exception?>(async () =>
+        {
+            await start.Task;
+            return Record.Exception(job.Start);
+        });
+
+        var first = ClaimAsync();
+        var second = ClaimAsync();
+        start.SetResult();
+        var outcomes = await Task.WhenAll(first, second);
+
+        Assert.Single(outcomes, outcome => outcome is null);
+        var rejection = Assert.IsType<InvalidJobTransitionException>(
+            Assert.Single(outcomes, outcome => outcome is not null));
+        Assert.Equal(JobStatus.Running, rejection.CurrentStatus);
+        Assert.Equal(JobStatus.Running, rejection.RequestedStatus);
+        AssertSnapshot(job, JobStatus.Running);
     }
 
     private static void AssertSnapshot(
