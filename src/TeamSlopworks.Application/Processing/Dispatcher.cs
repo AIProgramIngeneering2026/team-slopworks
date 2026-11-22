@@ -45,12 +45,28 @@ public sealed class Dispatcher(IToolRegistry registry)
                 job.Complete(value);
                 break;
             case ToolResult<JobResult>.Failure { Error: { } error }:
-                job.Fail(new JobFailure(error.Code, error.Message));
+                job.Fail(ToJobFailure(error));
                 break;
             default:
                 job.Fail(PlanFailed);
                 break;
         }
+    }
+
+    private static JobFailure ToJobFailure(ToolError error)
+    {
+        if (string.IsNullOrWhiteSpace(error.Code) || string.IsNullOrWhiteSpace(error.Message))
+        {
+            return PlanFailed;
+        }
+
+        // JobFailure.code in OpenAPI is narrower than the set of tool error codes.
+        return error.Code switch
+        {
+            "ocr_timeout" or "ocr_invalid_response" or "ocr_unavailable" or "unreadable_document"
+                or "processing_interrupted" or "processing_failed" => new JobFailure(error.Code, error.Message),
+            _ => new JobFailure(PlanFailed.Code, error.Message) { ToolCode = error.Code }
+        };
     }
 
     // Run before starting workers, with jobs left behind by the previous process.

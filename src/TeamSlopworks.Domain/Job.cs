@@ -10,7 +10,10 @@ public enum JobStatus
 
 public sealed record JobResult(string Text, long WordCount, long CharacterCount);
 
-public sealed record JobFailure(string Code, string Detail);
+public sealed record JobFailure(string Code, string Detail)
+{
+    public string? ToolCode { get; init; }
+}
 
 public sealed record JobState(JobStatus Status, JobResult? Result = null, string? ErrorReason = null)
 {

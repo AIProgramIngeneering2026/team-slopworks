@@ -49,16 +49,22 @@ public sealed class DispatcherTests
 
         var error = Assert.IsType<JobFailure>(job.Failure);
         Assert.Equal(JobStatus.Failed, job.Status);
-        Assert.Equal("unknown_operation", error.Code);
+        Assert.Equal("processing_failed", error.Code);
+        Assert.Equal("unknown_operation", error.ToolCode);
         Assert.Contains(Ocr, error.Detail);
         Assert.Null(job.Result);
     }
 
-    [Fact]
-    public async Task ToolFailurePreservesCodeAndDetailWithoutRetrying()
+    [Theory]
+    [InlineData("invalid_parameters", "processing_failed", "invalid_parameters")]
+    [InlineData("ocr_invalid_response", "ocr_invalid_response", null)]
+    [InlineData("ocr_unavailable", "ocr_unavailable", null)]
+    [InlineData("unreadable_document", "unreadable_document", null)]
+    public async Task ToolFailureUsesAJobFailureCodeWithoutRetrying(
+        string toolCode, string jobCode, string? savedToolCode)
     {
         var job = new Job();
-        var error = new ToolError("invalid_parameters", "Language must be 'ru' or 'en'.");
+        var error = new ToolError(toolCode, "OCR rejected the input.");
         var attempts = 0;
         var ocr = new StubTool<OcrToolInput, string>(Ocr, (_, _) =>
         {
@@ -71,9 +77,68 @@ public sealed class DispatcherTests
 
         var state = job.State;
         Assert.Equal(JobStatus.Failed, state.Status);
-        Assert.Equal(new JobFailure(error.Code, error.Message), state.Failure);
+        Assert.Equal(new JobFailure(jobCode, error.Message) { ToolCode = savedToolCode }, state.Failure);
         Assert.Equal(error.Message, state.ErrorReason);
         Assert.Equal(1, attempts);
+    }
+
+    [Theory]
+    [InlineData("", "OCR failed.")]
+    [InlineData("ocr_unavailable", " ")]
+    public async Task MalformedToolFailureStillCompletesJobAsFailed(string code, string message)
+    {
+        var job = new Job();
+        var ocr = new StubTool<OcrToolInput, string>(Ocr, (_, _) =>
+            Task.FromResult<ToolResult<string>>(new ToolResult<string>.Failure(new ToolError(code, message))));
+        var dispatcher = new Dispatcher(new StubRegistry(ocr));
+
+        await dispatcher.RunAsync(job, CreateDocumentPlan());
+
+        Assert.Equal(JobStatus.Failed, job.Status);
+        var failure = Assert.IsType<JobFailure>(job.Failure);
+        Assert.Equal("processing_failed", failure.Code);
+        Assert.False(string.IsNullOrWhiteSpace(failure.Detail));
+        Assert.Null(job.Result);
+    }
+
+    [Fact]
+    public async Task MismatchedToolUsesAJobFailureCodeAndPreservesItsToolCode()
+    {
+        var job = new Job();
+        var wrongTool = new StubTool<int, string>(Ocr, (_, _) =>
+            throw new InvalidOperationException("The mismatched tool must not be called."));
+        var dispatcher = new Dispatcher(new StubRegistry(wrongTool));
+
+        await dispatcher.RunAsync(job, CreateDocumentPlan());
+
+        Assert.Equal(JobStatus.Failed, job.Status);
+        var failure = Assert.IsType<JobFailure>(job.Failure);
+        Assert.Equal("processing_failed", failure.Code);
+        Assert.Equal("tool_contract_mismatch", failure.ToolCode);
+    }
+
+    [Fact]
+    public async Task StatisticsFailureAfterSuccessfulOcrDoesNotSaveAPartialResult()
+    {
+        var job = new Job();
+        const string text = "recognized text";
+        var ocr = new StubTool<OcrToolInput, string>(Ocr, (_, _) =>
+            Task.FromResult<ToolResult<string>>(new ToolResult<string>.Success(text)));
+        var failure = new ToolError("processing_failed", "Could not compute document statistics.");
+        var statistics = new StubTool<StatisticsToolInput, StatisticsToolOutput>(Statistics, (input, _) =>
+        {
+            Assert.Equal(text, input.Text);
+            return Task.FromResult<ToolResult<StatisticsToolOutput>>(
+                new ToolResult<StatisticsToolOutput>.Failure(failure));
+        });
+        var dispatcher = new Dispatcher(new StubRegistry(ocr, statistics));
+
+        await dispatcher.RunAsync(job, CreateDocumentPlan());
+
+        var state = job.State;
+        Assert.Equal(JobStatus.Failed, state.Status);
+        Assert.Equal(new JobFailure(failure.Code, failure.Message), state.Failure);
+        Assert.Null(state.Result);
     }
 
     [Theory]
