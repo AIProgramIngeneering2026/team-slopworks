@@ -10,7 +10,15 @@ public enum JobStatus
 
 public sealed record JobResult(string Text, long WordCount, long CharacterCount);
 
-public sealed record JobState(JobStatus Status, JobResult? Result = null, string? ErrorReason = null);
+public sealed record JobFailure(string Code, string Detail)
+{
+    public string? ToolCode { get; init; }
+}
+
+public sealed record JobState(JobStatus Status, JobResult? Result = null, string? ErrorReason = null)
+{
+    public JobFailure? Failure { get; init; }
+}
 
 public sealed class Job
 {
@@ -22,6 +30,7 @@ public sealed class Job
 
     public JobStatus Status => State.Status;
     public JobResult? Result => State.Result;
+    public JobFailure? Failure => State.Failure;
     public string? ErrorReason => State.ErrorReason;
 
     public void Start() => Transition(JobStatus.Created, new JobState(JobStatus.Running));
@@ -35,7 +44,18 @@ public sealed class Job
     public void Fail(string errorReason)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(errorReason);
-        Transition(JobStatus.Running, new JobState(JobStatus.Failed, ErrorReason: errorReason));
+        Fail(new JobFailure("processing_failed", errorReason));
+    }
+
+    public void Fail(JobFailure failure)
+    {
+        ArgumentNullException.ThrowIfNull(failure);
+        ArgumentException.ThrowIfNullOrWhiteSpace(failure.Code);
+        ArgumentException.ThrowIfNullOrWhiteSpace(failure.Detail);
+        Transition(JobStatus.Running, new JobState(JobStatus.Failed, ErrorReason: failure.Detail)
+        {
+            Failure = failure
+        });
     }
 
     private void Transition(JobStatus expected, JobState next)
