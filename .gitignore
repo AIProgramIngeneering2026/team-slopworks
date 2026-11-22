@@ -1,0 +1,16 @@
+# Build results
+bin/
+obj/
+
+# Test results
+TestResults/
+coverage/
+
+# IDE
+.idea/
+.vs/
+*.user
+
+# .NET local tooling
+.dotnet/
+*.binlog

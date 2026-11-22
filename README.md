@@ -22,6 +22,15 @@
 Описаны `POST /jobs`, `GET /jobs/{id}`, ответы и ошибки ProblemDetails,
 ключ идемпотентности и представления всех четырёх состояний Job.
 
+## Сборка и тесты
+
+Требуется .NET SDK 10 (см. `global.json`).
+
+```bash
+dotnet build
+dotnet test
+```
+
 ## Стек
 
 C#, .NET, ASP.NET Core, Entity Framework Core с миграциями, SQLite с переходом на PostgreSQL, xUnit.
