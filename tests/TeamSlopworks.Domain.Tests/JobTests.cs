@@ -117,6 +117,19 @@ public sealed class JobTests
         AssertSnapshot(job, JobStatus.Running);
     }
 
+    [Fact]
+    public void CapturedStateKeepsStatusAndOutcomeFromTheSameTransition()
+    {
+        var job = new Job();
+        job.Start();
+        var running = job.State;
+
+        job.Complete(Result);
+
+        Assert.Equal(new JobState(JobStatus.Running), running);
+        Assert.Equal(new JobState(JobStatus.Done, Result), job.State);
+    }
+
     private static void AssertSnapshot(
         Job job, JobStatus status, JobResult? result = null, string? errorReason = null)
     {
