@@ -10,7 +10,9 @@ public sealed class ToolRegistry : IToolRegistry
     private readonly Dictionary<string, ITool> _tools = new(StringComparer.Ordinal);
 
     /// <summary>
-    /// Registers a tool under its name.
+    /// Registers a tool under its name. Registration happens during application
+    /// setup, before the Dispatcher starts; after that the registry is only read.
+    /// Concurrent reads are supported, but not reads overlapping a registration.
     /// </summary>
     /// <param name="tool">The tool to register.</param>
     /// <exception cref="ArgumentNullException"><paramref name="tool"/> is null.</exception>
